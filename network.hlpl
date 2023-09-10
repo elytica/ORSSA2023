@@ -1,0 +1,121 @@
+DISPLAY_INPUT_ONLY=False
+model network
+set V = loadVertices()
+set E = loadEdges()
+set A = loadArcs()
+set I = loadIntermediates()
+set S = loadSupplyVertices()
+set D = loadDemandVertices()
+set sigma(V) = loadIncomming()
+set delta(V) = loadOutgoing()
+
+const d = loadEdgeDistance(), forall e in E
+const F = 100
+const C = 50
+
+bin x, forall e in E
+var 0<=f<=infty, forall a in A
+min sum_{e in E} { x_{e} }
+constr sum_{a in delta(v)}{f_{a}} - sum_{a in sigma(v)}{f_{a}} = 0, forall v in I
+constr sum_{a in delta(v)}{f_{a}} - sum_{a in sigma(v)}{f_{a}} = F, forall v in S
+constr sum_{a in delta(v)}{f_{a}} - sum_{a in sigma(v)}{f_{a}} = -F, forall v in D
+constr f_{alpha(e)} + f_{beta(e)} <= C*x_{e}, forall e in E
+end
+
+import elytica
+import json
+file = open('network_design.json')
+graph = json.load(file)
+edges = [{**item, 'nid': index} for index, item in enumerate(graph["edges"])]
+nodes = [{**item, 'nid': index} for index, item in enumerate(graph["nodes"])]
+loadVertices = lambda: [n['nid'] for n in nodes]
+loadEdges = lambda: [e['nid'] for e in edges]
+loadIntermediates = lambda: [n['nid']  for n in nodes if n['type'] == 'circle']
+loadSupplyVertices = lambda: [n['nid']  for n in nodes if n['type'] == 'square']
+loadDemandVertices = lambda: [n['nid']  for n in nodes if n['type'] == 'triangle']
+loadEdgeDistance = lambda: {e['nid']: e['distance'] for e in edges}
+def generateArcs(edges):
+  edge_len = len(edges)
+  return [
+    {
+      'source': direction[0],
+      'target': direction[1],
+      'id': edge['id'] + suffix,      
+      'nid': edge['nid'] if index == 0 else edge['nid'] + edge_len
+    }
+    for edge in edges
+    for index, (direction, suffix) in enumerate([((edge['source'], edge['target']), '-1'), ((edge['target'], edge['source']), '-2')])
+  ]
+arcs = generateArcs(edges)
+loadArcs = lambda: [a['nid'] for a in arcs]
+loadIncomming = lambda: {n['nid']: [a['nid'] for a in arcs if a['target'] == n['id']] for n in nodes}
+loadOutgoing = lambda: {n['nid']: [a['nid'] for a in arcs if a['source'] == n['id']] for n in nodes}
+def alpha(e): return int(e)
+def beta(e): return (int(e) + int(len(edges)))
+
+
+
+# Calculate the midpoint
+mid_x = sum(node["x"] for node in nodes) / len(nodes)
+mid_y = sum(node["y"] for node in nodes) / len(nodes)
+# Translate the nodes relative to the midpoint
+translated = [{"x": node["x"] - mid_x, "y": node["y"] - mid_y} for node in nodes]
+# Find the scaling range
+min_x, max_x = min(node["x"] for node in translated), max(node["x"] for node in translated)
+min_y, max_y = min(node["y"] for node in translated), max(node["y"] for node in translated)
+def get_color(node):
+  if node["type"] == 'triangle':
+    return '#0000ff'
+  if node["type"] == 'square':
+    return '#00ff00'
+  if node["type"] == 'circle':
+    return '#ff0000'
+  return '#000000'
+
+
+def main():
+  visual_vertices = [{
+    **node, 
+    "x": ((node["x"] - mid_x - min_x) / (max_x - min_x or 1)) * 500,
+    "y": ((node["y"] - mid_y - min_y) / (max_y - min_y or 1)) * 500,
+    "name": node["id"],
+    "symbol": node["type"],    
+    "itemStyle": {"color": get_color(node)},
+    "id": None
+   } for node in nodes]
+  visual_edges = [{
+    **edge, 
+    "id": None,
+    "weight": None,
+    "label": None,
+    "symbol": None
+   } for edge in edges]
+  
+  visual_vertices = [{k: v for k, v in node.items() if v is not None} for node in visual_vertices]
+  visual_edges = [{k: v for k, v in edge.items() if v is not None} for edge in visual_edges]    
+  elytica.init_model("network")
+  if not DISPLAY_INPUT_ONLY:
+    elytica.run_model("network")  
+    resulting_edges = [ e for e in elytica.get_model_set("network", "E")  if elytica.get_variable_value("network", f"x{e}") > 0.5 ]  
+    visual_edges = [e for e in visual_edges if e['nid'] in resulting_edges]
+  
+  chart = {
+    "series": [ {
+      "roam": 'zoom',
+      "type": 'graph',
+      "layout": 'none',
+      "data": visual_vertices,
+      "edges": visual_edges,
+      "lineStyle": {
+        "opacity": 1,
+        "width": 3
+        }
+      }
+    ],
+   }
+
+
+  elytica.write_results(json.dumps({"chart": chart})) 
+  
+  
+  return 0
